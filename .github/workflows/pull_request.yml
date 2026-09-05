@@ -1,0 +1,11 @@
+name: Pre-commit checks
+
+on:
+  pull_request:
+
+jobs:
+  pre-commit:
+    uses: CAVISE/pipelines/.github/workflows/python-pre-commit.yml@main
+    with:
+      python-version: "3.12"
+      all-files: true
