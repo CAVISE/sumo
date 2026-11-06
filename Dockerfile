@@ -44,3 +44,6 @@ RUN pip install --no-cache-dir --upgrade pip==26.1.2 && \
     pip install --no-cache-dir \
     traci==1.27.0 \
     eclipse-sumo==1.27.0
+
+COPY --chown=${USER}:${GROUP} sumo/api/requirements.txt /tmp/sumo-api-requirements.txt
+RUN pip install --no-cache-dir -r /tmp/sumo-api-requirements.txt
