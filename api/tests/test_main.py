@@ -23,8 +23,7 @@ def api(monkeypatch, caplog):
 
 @pytest.fixture
 def client(api):
-    with TestClient(api.app) as client:
-        yield client
+    yield TestClient(api.app)
 
 
 @pytest.fixture
@@ -154,3 +153,37 @@ def test_status_available_while_stopping(api, process):
             await task
 
     asyncio.run(check())
+
+
+def test_shutdown_stops_tracked_process(api, process):
+    with TestClient(api.app):
+        pass
+    assert api.process is None
+    process.send_signal.assert_called_once_with(api.signal.SIGINT)
+    process.wait.assert_awaited_once()
+
+
+def test_shutdown_kills_after_timeout(api, process, monkeypatch):
+    async def timeout(awaitable, timeout):
+        awaitable.close()
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setattr(api.asyncio, "wait_for", timeout)
+    with TestClient(api.app):
+        pass
+    process.send_signal.assert_called_once_with(api.signal.SIGINT)
+    process.kill.assert_called_once()
+    process.wait.assert_awaited_once()
+    assert process.returncode == 0
+
+
+def test_shutdown_after_process_disappears(api, process, monkeypatch):
+    async def timeout(awaitable, timeout):
+        awaitable.close()
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setattr(api.asyncio, "wait_for", timeout)
+    process.kill.side_effect = ProcessLookupError()
+    with TestClient(api.app):
+        pass
+    process.wait.assert_awaited_once()

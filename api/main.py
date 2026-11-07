@@ -1,6 +1,7 @@
+from contextlib import asynccontextmanager
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 import signal
 from pathlib import Path
 from fastapi import FastAPI, APIRouter, HTTPException
@@ -11,7 +12,27 @@ logger = logging.getLogger("sumo.api")
 
 API_VERSION = "v1"
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Stop and reap the managed simulator before the API exits."""
+    try:
+        yield
+    finally:
+        if process is not None:
+            current = process
+            try:
+                await stop()
+            except HTTPException:
+                logger.warning("Forcing process shutdown: pid=%s", current.pid)
+                try:
+                    current.kill()
+                except ProcessLookupError:
+                    logger.info("Process already exited: pid=%s", current.pid)
+                await current.wait()
+
+
+app = FastAPI(lifespan=lifespan)
 router = APIRouter(prefix=f"/{API_VERSION}")
 process = None
 process_lock = asyncio.Lock()
@@ -98,7 +119,6 @@ async def stop():
                 process = None
                 stop_requested = False
     return await status()
-
 
 
 app.include_router(router)
