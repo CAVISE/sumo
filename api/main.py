@@ -39,7 +39,7 @@ async def log_requests(request: Request, call_next: Callable[[Request], Awaitabl
 async def status():
     async with process_lock:
         if process is None:
-            state = "IDLE" if last_pid is None else "STOPPED"
+            state = "IDLE" if last_pid is None else ("STOPPED" if last_returncode == 0 else "FAILED")
             return {"state": state, "pid": last_pid, "returncode": last_returncode}
         if process.returncode is not None:
             state = "STOPPED" if process.returncode == 0 else "FAILED"
@@ -54,7 +54,10 @@ async def run(scenario: str):
     logger.info("Run requested: scenario=%s", scenario)
     async with process_lock:
         if process is None or process.returncode is not None:
-            config_path = Path("/home/sumo/assets") / scenario / f"{scenario}.sumocfg"
+            assets_root = Path("/home/sumo/assets").resolve()
+            config_path = (assets_root / scenario / f"{Path(scenario).name}.sumocfg").resolve()
+            if not config_path.is_relative_to(assets_root):
+                raise HTTPException(status_code=404, detail="SUMO scenario configuration not found")
             if not config_path.is_file():
                 raise HTTPException(status_code=404, detail="SUMO scenario configuration not found")
             process = await asyncio.create_subprocess_exec("sumo-gui", "--remote-port", "3000", "-S", "--quit-on-end", "-c", str(config_path))
@@ -78,17 +81,24 @@ async def stop():
                 except ProcessLookupError:
                     logger.info("Process already exited before SIGINT: pid=%s", process.pid)
                 stop_requested = True
-            try:
-                await asyncio.wait_for(process.wait(), timeout=30)
-            except asyncio.TimeoutError:
-                logger.error("Stop timed out: pid=%s", process.pid)
-                raise HTTPException(status_code=504, detail="SUMO did not stop within 30 seconds")
-            logger.info("Process stopped: pid=%s returncode=%s", process.pid, process.returncode)
-            last_pid = process.pid
-            last_returncode = process.returncode
-            process = None
-            stop_requested = False
-        return {"state": "IDLE" if last_pid is None else "STOPPED", "pid": last_pid, "returncode": last_returncode}
+            current = process
+        else:
+            current = None
+    if current is not None:
+        try:
+            await asyncio.wait_for(current.wait(), timeout=30)
+        except asyncio.TimeoutError:
+            logger.error("Stop timed out: pid=%s", current.pid)
+            raise HTTPException(status_code=504, detail="SUMO did not stop within 30 seconds")
+        async with process_lock:
+            if process is current:
+                logger.info("Process stopped: pid=%s returncode=%s", current.pid, current.returncode)
+                last_pid = current.pid
+                last_returncode = current.returncode
+                process = None
+                stop_requested = False
+    return await status()
+
 
 
 app.include_router(router)

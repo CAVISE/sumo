@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 def api(monkeypatch, caplog):
-    spec = importlib.util.spec_from_file_location("component_api", Path(__file__).with_name("main.py"))
+    spec = importlib.util.spec_from_file_location("component_api", Path(__file__).resolve().parents[1] / "main.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     caplog.set_level(logging.DEBUG, logger=module.logger.name)
@@ -116,3 +116,41 @@ def test_missing_config(client, monkeypatch, caplog):
     monkeypatch.setattr(Path, "is_file", lambda path: False)
     assert client.post("/v1/run?scenario=missing").status_code == 404
     assert "rejected" in caplog.text
+
+
+def test_failed_exit_preserved(api, client, process):
+    process.returncode = 1
+    process.wait = AsyncMock(return_value=1)
+    assert client.post("/v1/stop").json()["state"] == "FAILED"
+    assert client.get("/v1/status").json()["state"] == "FAILED"
+
+
+def test_nested_scenario(api, client, monkeypatch):
+    spawn = AsyncMock(return_value=Mock(pid=12345, returncode=None))
+    monkeypatch.setattr(api.asyncio, "create_subprocess_exec", spawn)
+    monkeypatch.setattr(Path, "is_file", lambda path: True)
+    assert client.post("/v1/run?scenario=advcp-scenarios/advcp_check").status_code == 200
+    assert spawn.call_args.args[-1] == "/home/sumo/assets/advcp-scenarios/advcp_check/advcp_check.sumocfg"
+
+
+def test_status_available_while_stopping(api, process):
+    async def check():
+        entered = asyncio.Event()
+        finish = asyncio.Event()
+
+        async def wait():
+            entered.set()
+            await finish.wait()
+            process.returncode = 0
+
+        process.wait = wait
+        task = asyncio.create_task(api.stop())
+        await entered.wait()
+        try:
+            result = await asyncio.wait_for(api.status(), timeout=1)
+            assert result["state"] == "STOPPING"
+        finally:
+            finish.set()
+            await task
+
+    asyncio.run(check())
