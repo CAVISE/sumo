@@ -4,14 +4,15 @@ import asyncio
 import importlib.util
 import logging
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 from fastapi.testclient import TestClient
 
 
 @pytest.fixture
-def api(monkeypatch, caplog):
+def api(monkeypatch, caplog, tmp_path):
+    monkeypatch.setenv("CAVISE_ADAPTER_STATE_DIR", str(tmp_path))
     spec = importlib.util.spec_from_file_location("component_api", Path(__file__).resolve().parents[1] / "main.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -159,7 +160,7 @@ def test_shutdown_stops_tracked_process(api, process):
     with TestClient(api.app):
         pass
     assert api.process is None
-    process.send_signal.assert_called_once_with(api.signal.SIGINT)
+    process.send_signal.assert_called_once_with(process.pid, api.signal.SIGINT)
     process.wait.assert_awaited_once()
 
 
@@ -171,8 +172,8 @@ def test_shutdown_kills_after_timeout(api, process, monkeypatch):
     monkeypatch.setattr(api.asyncio, "wait_for", timeout)
     with TestClient(api.app):
         pass
-    process.send_signal.assert_called_once_with(api.signal.SIGINT)
-    process.kill.assert_called_once()
+    assert process.send_signal.call_args_list == [call(process.pid, api.signal.SIGINT), call(process.pid, api.signal.SIGKILL)]
+    process.kill.assert_not_called()
     process.wait.assert_awaited_once()
     assert process.returncode == 0
 
