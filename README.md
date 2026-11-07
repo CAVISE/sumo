@@ -14,3 +14,10 @@ network simulation.
 - `assets/` — SUMO networks, routes, scenario configurations, and related map
   files.
 - `Dockerfile` — container environment with SUMO and its Python interfaces.
+
+## Start the API
+
+```bash
+docker exec -it sumo bash
+python -m api
+```
