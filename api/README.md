@@ -8,7 +8,10 @@ proxy. OpenCDA owns external authentication and Manager registration.
 `.adapter-state`). Start intent is committed to SQLite before process creation.
 The adapter retains its process handle and owns a separate process group during
 its lifetime. Status does not wait for the long stop operation. A stop timeout
-is not completion and does not release occupancy.
+is not completion and does not release occupancy. Once the launcher has been
+reaped, its numeric process-group ID is no longer used for signals, including
+shutdown escalation. A confirmed completed group remains retired even if the
+number is reused; an unconfirmed surviving group is reported as `UNKNOWN`.
 
 After API restart with unresolved start intent, status returns `UNKNOWN` and
 run/stop return 409. PID presence or absence is not sufficient to regain ownership.

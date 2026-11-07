@@ -188,3 +188,34 @@ def test_shutdown_after_process_disappears(api, process, monkeypatch):
     with TestClient(api.app):
         pass
     process.wait.assert_awaited_once()
+
+
+def test_completed_group_identity_is_not_reused(api, client, process, monkeypatch):
+    """Once group completion is observed, a recycled numeric PGID cannot regain ownership."""
+    process.returncode = 0
+    response = client.get("/v1/status")
+    assert response.json()["state"] == "STOPPED"
+    monkeypatch.setattr(api, "_group_exists", lambda pid: True)
+    response = client.post("/v1/stop")
+    assert response.json()["state"] == "STOPPED"
+    process.send_signal.assert_not_called()
+    assert api.process is None
+
+
+def test_reaped_launcher_never_signals_unverified_group(api, client, process, monkeypatch):
+    """An existing group after launcher exit is uncertain; stop and shutdown must not signal it."""
+    process.returncode = 0
+    monkeypatch.setattr(api, "_group_exists", lambda pid: True)
+
+    async def timeout(awaitable, timeout):
+        awaitable.close()
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setattr(api.asyncio, "wait_for", timeout)
+    response = client.get("/v1/status")
+    assert response.json()["state"] == "UNKNOWN"
+    response = client.post("/v1/stop")
+    assert response.status_code == 504
+    with TestClient(api.app):
+        pass
+    process.send_signal.assert_not_called()

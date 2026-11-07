@@ -29,11 +29,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 await stop()
             except HTTPException:
                 logger.warning("Forcing process shutdown: pid=%s", current.pid)
-                try:
-                    os.killpg(current.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    logger.info("Process already exited: pid=%s", current.pid)
-                await current.wait()
+                if current.returncode is None and process is current:
+                    try:
+                        os.killpg(current.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        logger.info("Process already exited: pid=%s", current.pid)
+                    await current.wait()
+                else:
+                    logger.warning("Launcher already reaped; refusing to signal an unverified group: pid=%s", current.pid)
 
 
 occupancy: Occupancy | None = None
@@ -59,6 +62,7 @@ process_lock = asyncio.Lock()
 stop_requested = False
 last_pid = None
 last_returncode = None
+completed_process = None
 
 
 def _group_exists(group_id: int) -> bool:
@@ -72,10 +76,23 @@ def _group_exists(group_id: int) -> bool:
     return True
 
 
+def _group_complete(current: asyncio.subprocess.Process) -> bool:
+    """Retire a completed group's identity permanently, even if its number is reused."""
+    global completed_process
+    if completed_process is current:
+        return True
+    if current.returncode is None:
+        return False
+    if not _group_exists(current.pid):
+        completed_process = current
+        return True
+    return False
+
+
 async def _wait_for_group(current: asyncio.subprocess.Process) -> None:
-    """Wait for the launcher and all owned children before declaring cleanup."""
+    """Observe remaining descendants without signalling a reaped launcher's group ID."""
     await current.wait()
-    while _group_exists(current.pid):
+    while not _group_complete(current):
         await asyncio.sleep(0.1)
 
 
@@ -102,8 +119,10 @@ async def status():
         if process is None:
             state = "IDLE" if last_pid is None else ("STOPPED" if last_returncode == 0 else "FAILED")
             return {"state": state, "pid": last_pid, "returncode": last_returncode}
-        if process.returncode is not None and not _group_exists(process.pid):
+        if _group_complete(process):
             state = "STOPPED" if process.returncode == 0 else "FAILED"
+        elif process.returncode is not None:
+            state = "UNKNOWN"
         else:
             state = "STOPPING" if stop_requested else "RUNNING"
         return {"state": state, "pid": process.pid, "returncode": process.returncode}
@@ -116,7 +135,7 @@ async def run(scenario: str):
     async with process_lock:
         if occupancy is not None and occupancy.uncertain:
             raise HTTPException(409, "Previous execution ownership is unknown; verify container cleanup")
-        if process is None or (process.returncode is not None and not _group_exists(process.pid)):
+        if process is None or _group_complete(process):
             if occupancy is not None:
                 occupancy.clear()
             assets_root = Path("/home/sumo/assets").resolve()
@@ -153,7 +172,7 @@ async def stop():
     logger.info("Stop requested")
     async with process_lock:
         if process is not None:
-            if not stop_requested:
+            if process.returncode is None and not stop_requested:
                 try:
                     os.killpg(process.pid, signal.SIGINT)
                 except ProcessLookupError:
